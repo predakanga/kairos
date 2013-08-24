@@ -11,6 +11,7 @@ import time
 import re
 import pymongo
 from pymongo import ASCENDING, DESCENDING
+from pymongo.errors import DuplicateKeyError
 from datetime import datetime
 
 from timeseries import *
@@ -31,6 +32,8 @@ class MongoBackend(Timeseries):
         return MongoCount.__new__(MongoCount, *args, **kwargs)
       elif ttype=='gauge':
         return MongoGauge.__new__(MongoGauge, *args, **kwargs)
+      elif ttype=='avg':
+        return MongoAvg.__new__(MongoAvg, *args, **kwargs)
     return Timeseries.__new__(cls, *args, **kwargs)
 
   def __init__(self, client, **kwargs):
@@ -58,11 +61,14 @@ class MongoBackend(Timeseries):
       # configuration option (performance vs. memory tradeoff)
       if config['coarse']:
         self._client[interval].ensure_index( 
-          [('interval',ASCENDING),('name',ASCENDING)], background=True )
+          [('interval',ASCENDING),('name',ASCENDING)], background=True, unique=True )
       else:
+        # TODO: The creation of this index is problematic - if the collection contains both
+        # coarse and non-coarse documents, non-coarse documents will be rejected by the above
+        # index.
         self._client[interval].ensure_index( 
           [('interval',ASCENDING),('resolution',ASCENDING),('name',ASCENDING)],
-          background=True )
+          background=True, unique=True )
       if config['expire']:
         self._client[interval].ensure_index( 
           [('expire_from',ASCENDING)], expireAfterSeconds=config['expire'], background=True )
@@ -232,4 +238,69 @@ class MongoGauge(MongoBackend, Gauge):
 
   def _type_no_value(self):
     # TODO: resolve this disconnect with redis backend
+    return 0
+
+class MongoAvg(MongoBackend, Avg):
+  
+  def __init__(self, client, **kwargs):
+    # Run our default constructor
+    super(MongoAvg, self).__init__(client, **kwargs)
+    # Then add our own index (sparse index means it should only consider documents with the requisite fields)
+    for interval,config in self._intervals.iteritems():
+      if config['coarse']:
+        self._client[interval].ensure_index( 
+          [('interval',ASCENDING),('name',ASCENDING),('count',ASCENDING)], background=True, sparse=True )
+      else:
+        self._client[interval].ensure_index( 
+          [('interval',ASCENDING),('resolution',ASCENDING),('name',ASCENDING),('count',ASCENDING)], background=True, sparse=True )
+  
+  # To provide support for the update-if-current isolation mechanism, we have to reimplement _insert_data
+  def _insert_data(self, name, value, timestamp, interval, config):
+    '''Helper to insert data into mongo.'''
+    if self._prefix:
+      name = "%s:%s" % (self._prefix, name)
+    insert = {'name':name, 'interval':config['i_calc'].to_bucket(timestamp)}
+    if not config['coarse']:
+      insert['resolution'] = config['r_calc'].to_bucket(timestamp)
+    query = insert.copy()
+    
+    # Start by executing the query, so that we can get the current document
+    current_doc = self._client[interval].find_one(query)
+    insert['value'] = 0.0
+    insert['count'] = 0
+    create_doc = True
+    # If we have an existing document...
+    if current_doc:
+      # Grab our starting values
+      insert['value'] = current_doc['value']
+      insert['count'] = current_doc['count']
+      # And add the count to the query; it's our versioning variable
+      query['count'] = current_doc['count']
+      # Also disable upsertion, so that we don't create duplicate entries if we hit concurrency issues
+      create_doc = False
+    
+    if config['expire']:
+      insert['expire_from'] = datetime.utcfromtimestamp( timestamp )
+    
+    # Calculate our new count and value
+    insert['count'] += 1
+    insert['value'] += ((float(value)-insert['value'])/insert['count']) # CAi+1 = CAi + ( (Xi-CAi) / i+1 )
+    
+    # TODO: use write preference settings if we have them
+    # TODO: There's still a race condition here - concurrent processes will both try to create the first entry and overwrite each other
+    if create_doc:
+      try:
+        self._client[interval].insert(insert)
+      except DuplicateKeyError:
+        raise ConcurrentModificationError()
+    else:
+      # switch to atomic updates
+      insert = {'$set':insert.copy()}
+      res = self._client[interval].update( query, insert, upsert=False, check_keys=False )
+      if not res:
+        raise NeedsWriteAcknowledgementError()
+      if not res['updatedExisting'] or res['n'] != 1:
+        raise ConcurrentModificationError()
+  
+  def _type_no_value(self):
     return 0

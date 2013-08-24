@@ -9,3 +9,9 @@ class KairosException(Exception):
 
 class UnknownInterval(KairosException):
   '''The requested interval is not configured.'''
+
+class ConcurrentModificationError(KairosException):
+  '''The item could not be updated atomically; try again'''
+
+class NeedsWriteAcknowledgementError(KairosException):
+  '''The requested operation requires write acknowledgement to be enabled'''
