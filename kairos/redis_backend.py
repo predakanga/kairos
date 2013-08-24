@@ -9,6 +9,7 @@ import operator
 import sys
 import time
 import re
+import os.path
 
 from timeseries import *
 
@@ -30,6 +31,8 @@ class RedisBackend(Timeseries):
         return RedisGauge.__new__(RedisGauge, *args, **kwargs)
       elif ttype=='set':
         return RedisSet.__new__(RedisSet, *args, **kwargs)
+      elif ttype=='avg':
+        return RedisAvg.__new__(RedisAvg, *args, **kwargs)
     return Timeseries.__new__(cls, *args, **kwargs)
 
   def __init__(self, client, **kwargs):
@@ -246,3 +249,26 @@ class RedisSet(RedisBackend, Set):
 
   def _type_get(self, handle, key):
     return handle.smembers(key)
+
+cma_script = None
+
+class RedisScriptedSeries(RedisBackend):
+  script_path = None
+  script = None
+  
+  def __init__(self, client, **kwargs):
+    super(RedisScriptedSeries, self).__init__(client, **kwargs)
+    cls = self.__class__
+    if cls.script is None:
+      abs_path = os.path.join(os.path.dirname(__file__), 'scripts', 'redis', cls.script_path)
+      cls.script = client.register_script(open(abs_path).read())
+
+class RedisAvg(RedisScriptedSeries, Avg):
+  script_path = "cma.lua"
+  
+  def _type_insert(self, handle, key, value):
+    self.script(keys=[key], args=[value], client=handle)
+  
+  def _type_get(self, handle, key):
+    return handle.get(key + "_cma")
+  

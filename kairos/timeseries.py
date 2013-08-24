@@ -793,6 +793,39 @@ class Set(Timeseries):
       if row: rval |= row
     return rval
 
+class Avg(Timeseries):
+  '''
+  Time series that manages aggregate-on-store averages
+  '''
+  
+  def _transform(self, data, transform):
+    if callable(transform):
+      data = transform(data)
+    return data
+  
+  def _process_row(self, data):
+    if self._read_func and data:
+      return self._read_func(data)
+    return data
+
+  def _condense(self, data):
+    '''
+    Condense by averaging the data of all of the lists.
+    '''
+    if data:
+      return float(reduce(operator.add, data.values())) / len(data)
+    return None
+
+  def _join(self, rows):
+    '''
+    Join multiple rows worth of data into a single result.
+    '''
+    rval = []
+    for row in rows:
+      if row: rval.extend( row )
+    return rval
+  
+
 # Load the backends after all the timeseries had been defined.
 try:
   from redis_backend import RedisBackend
