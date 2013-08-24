@@ -270,5 +270,5 @@ class RedisAvg(RedisScriptedSeries, Avg):
     self.script(keys=[key], args=[value], client=handle)
   
   def _type_get(self, handle, key):
-    return handle.get(key + "_cma")
+    return handle.lindex(key, 0)
   
