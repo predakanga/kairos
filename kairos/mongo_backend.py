@@ -44,6 +44,8 @@ class MongoBackend(Timeseries):
 
     super(MongoBackend,self).__init__(client, **kwargs)
     
+    self._prefix = kwargs.get('prefix', '')
+    
     # Define the indices for lookups and TTLs
     for interval,config in self._intervals.iteritems():
       # TODO: the interval+(resolution+)name combination should be unique,
@@ -101,6 +103,8 @@ class MongoBackend(Timeseries):
 
   def _insert_data(self, name, value, timestamp, interval, config):
     '''Helper to insert data into mongo.'''
+    if self._prefix:
+      name = "%s:%s" % (self._prefix, name)
     insert = {'name':name, 'interval':config['i_calc'].to_bucket(timestamp)}
     if not config['coarse']:
       insert['resolution'] = config['r_calc'].to_bucket(timestamp)
@@ -121,6 +125,8 @@ class MongoBackend(Timeseries):
     Get the interval.
     '''
     i_bucket = config['i_calc'].to_bucket(timestamp)
+    if self._prefix:
+      name = "%s:%s" % (self._prefix, name)
 
     rval = OrderedDict()
     query = {'name':name, 'interval':i_bucket}
@@ -151,6 +157,8 @@ class MongoBackend(Timeseries):
     rval = OrderedDict()
     step = config['step']
     resolution = config.get('resolution',step)
+    if self._prefix:
+      name = "%s:%s" % (self._prefix, name)
     
     query = { 'name':name, 'interval':{'$gte':buckets[0], '$lte':buckets[-1]} }
     sort = [('interval', ASCENDING)]
@@ -185,6 +193,8 @@ class MongoBackend(Timeseries):
     '''
     # TODO: confirm that this does not use the combo index and determine
     # performance implications.
+    if self._prefix:
+        name = "%s:%s" % (self._prefix, name)
     num_deleted = 0
     for interval,config in self._intervals.iteritems():
       # TODO: use write preference settings if we have them
